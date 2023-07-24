@@ -38,6 +38,12 @@ type Simple struct {
 	wg             sync.WaitGroup
 	instances      map[string]*model2.Instance
 	idleInstance   *list.List
+	// recording the start duration
+	executionDuration float32
+	startTime         map[string]*time.Time
+	// recording the assign time
+	assignDuration float32
+	lastAssignTime time.Time
 }
 
 func New(metaData *model2.Meta, config *config.Config) Scaler {
@@ -46,13 +52,17 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 		log.Fatalf("client init with error: %s", err.Error())
 	}
 	scheduler := &Simple{
-		config:         config,
-		metaData:       metaData,
-		platformClient: client,
-		mu:             sync.Mutex{},
-		wg:             sync.WaitGroup{},
-		instances:      make(map[string]*model2.Instance),
-		idleInstance:   list.New(),
+		config:            config,
+		metaData:          metaData,
+		platformClient:    client,
+		mu:                sync.Mutex{},
+		wg:                sync.WaitGroup{},
+		instances:         make(map[string]*model2.Instance),
+		idleInstance:      list.New(),
+		executionDuration: 0,
+		startTime:         make(map[string]*time.Time),
+		assignDuration:    0,
+		lastAssignTime:    time.Now(),
 	}
 	log.Printf("New scaler for app: %s is created", metaData.Key)
 	scheduler.wg.Add(1)
@@ -73,10 +83,21 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	}()
 	log.Printf("Assign, request id: %s", request.RequestId)
 	s.mu.Lock()
+	assignDuration := float32(time.Since(s.lastAssignTime).Milliseconds())
+	s.lastAssignTime = start
+
+	// if find the free instance, scheduling this instance for test
 	if element := s.idleInstance.Front(); element != nil {
+		// average time of the duration between last scheduling and this scheduling
+		s.assignDuration = s.assignDuration*0.2 + assignDuration*0.8
+		log.Printf("slot id: %s, assign duration: %f", s.metaData.Key, s.assignDuration)
+
 		instance := element.Value.(*model2.Instance)
 		instance.Busy = true
 		s.idleInstance.Remove(element)
+		// record the instance assigned time
+		startTime := time.Now()
+		s.startTime[instanceId] = &startTime
 		s.mu.Unlock()
 		log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
 		instanceId = instance.Id
@@ -123,6 +144,12 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	s.mu.Lock()
 	instance.Busy = true
 	s.instances[instance.Id] = instance
+
+	s.assignDuration = s.assignDuration*0.2 + assignDuration*0.8
+	log.Printf("slot id: %s, assign duration: %f, ---no use old instance", s.metaData.Key, s.assignDuration)
+	startTime := time.Now()
+	s.startTime[instanceId] = &startTime
+
 	s.mu.Unlock()
 	log.Printf("request id: %s, instance %s for app %s is created, init latency: %dms", request.RequestId, instance.Id, instance.Meta.Key, instance.InitDurationInMs)
 
@@ -164,10 +191,24 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 	log.Printf("Idle, request id: %s", request.Assigment.RequestId)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	exeTime := time.Since(*s.startTime[instanceId]).Milliseconds()
+	s.executionDuration = s.executionDuration*0.2 + float32(exeTime)*0.8
+	log.Printf("**slot id: %s, exec suration: %f", s.metaData.Key, s.executionDuration)
+
 	if instance := s.instances[instanceId]; instance != nil {
 		slotId = instance.Slot.Id
 		instance.LastIdleTime = time.Now()
+		// add the timeout destroy the instance strategy
+		if s.executionDuration >= 1200 && instance.InitDurationInMs <= 200 && s.assignDuration > 1000*60 {
+			needDestroy = true
+			delete(s.instances, instanceId)
+			log.Printf("request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
+			return reply, nil
+		}
+
 		if needDestroy {
+			delete(s.instances, instanceId)
 			log.Printf("request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
 			return reply, nil
 		}
@@ -203,7 +244,7 @@ func (s *Simple) gcLoop() {
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model2.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration > s.config.IdleDurationBeforeGC {
+				if idleDuration > s.config.IdleDurationBeforeGC || s.idleInstance.Len() > 10 {
 					//need GC
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
