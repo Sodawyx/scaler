@@ -196,14 +196,26 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 	s.executionDuration = s.executionDuration*0.2 + float32(exeTime)*0.8
 	log.Printf("**slot id: %s, exec suration: %f", s.metaData.Key, s.executionDuration)
 
+	log.Printf("the instance list lenth is %d", len(s.instances))
+
 	if instance := s.instances[instanceId]; instance != nil {
+		log.Println("%%%%****")
 		slotId = instance.Slot.Id
 		instance.LastIdleTime = time.Now()
 		// add the timeout destroy the instance strategy
 		if s.executionDuration >= 1200 && instance.InitDurationInMs <= 200 && s.assignDuration > 1000*60 {
 			needDestroy = true
 			delete(s.instances, instanceId)
-			log.Printf("request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
+			log.Printf("***satisfy timeout logic: request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
+			return reply, nil
+		}
+
+		// add the memory max limit instance strategy
+		log.Printf("instance %s, the memory is: %d", instance.Meta.Key, s.metaData.MemoryInMb)
+		if s.metaData.MemoryInMb >= 1024 {
+			needDestroy = true
+			delete(s.instances, instanceId)
+			log.Printf("***satisfy memory high limit: request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
 			return reply, nil
 		}
 

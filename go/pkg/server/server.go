@@ -19,7 +19,6 @@ import (
 	"github.com/AliyunContainerService/scaler/go/pkg/config"
 	"github.com/AliyunContainerService/scaler/go/pkg/manager"
 	"github.com/AliyunContainerService/scaler/go/pkg/model"
-
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -46,6 +45,7 @@ func (s *Server) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			Key:           request.MetaData.Key,
 			Runtime:       request.MetaData.Runtime,
 			TimeoutInSecs: request.MetaData.TimeoutInSecs,
+			MemoryInMb:    request.MetaData.MemoryInMb,
 		},
 	}
 	scheduler := s.mgr.GetOrCreate(metaData)
