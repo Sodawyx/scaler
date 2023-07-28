@@ -23,11 +23,27 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"log"
+	"math"
 	"sync"
 	"time"
 
 	pb "github.com/AliyunContainerService/scaler/proto"
 	"github.com/google/uuid"
+)
+
+const (
+	// CLEANUP_TIME_INVERVAL the time interval to execute a clean up operation
+	CLEANUP_TIME_INVERVAL = 150 * time.Second
+
+	// UPWARD_THRESHOLD the threshold when the request is increasing
+	UPWARD_THRESHOLD = 0.2
+	// DOWNWARD_THRESHOLD the threshold when the request is declining
+	DOWNWARD_THRESHOLD = 0.2
+
+	// EXPAND the expand coefficient
+	EXPAND = 1.2
+	// DECLINE the decline coefficient
+	DECLINE = 2048
 )
 
 type Simple struct {
@@ -43,6 +59,10 @@ type Simple struct {
 	startTime         map[string]*time.Time
 	// recording the assign time
 	assignDuration float32
+	// recording the request times in the last time interval
+	lastRequestTimes int
+	// recording the request times
+	requestTimes   int
 	lastAssignTime time.Time
 }
 
@@ -63,11 +83,14 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 		startTime:         make(map[string]*time.Time),
 		assignDuration:    0,
 		lastAssignTime:    time.Now(),
+		lastRequestTimes:  -1,
+		requestTimes:      0,
 	}
 	log.Printf("New scaler for app: %s is created", metaData.Key)
 	scheduler.wg.Add(1)
 	go func() {
 		defer scheduler.wg.Done()
+		scheduler.CleanUp()
 		scheduler.gcLoop()
 		log.Printf("gc loop for app: %s is stoped", metaData.Key)
 	}()
@@ -83,6 +106,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	}()
 	log.Printf("Assign, request id: %s", request.RequestId)
 	s.mu.Lock()
+	s.requestTimes++
 	assignDuration := float32(time.Since(s.lastAssignTime).Milliseconds())
 	s.lastAssignTime = start
 
@@ -199,7 +223,7 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 	if instance := s.instances[instanceId]; instance != nil {
 		slotId = instance.Slot.Id
 		instance.LastIdleTime = time.Now()
-		// add the timeout destroy the instance strategy
+		// add the timeout destroy the instance strategy //
 		if s.executionDuration >= 1200 && instance.InitDurationInMs <= 200 && s.assignDuration > 1000*60 {
 			needDestroy = true
 			delete(s.instances, instanceId)
@@ -263,6 +287,64 @@ func (s *Simple) gcLoop() {
 			s.mu.Unlock()
 			break
 		}
+	}
+}
+
+// CleanUp clean up the idle instances according to TCP strategy
+func (s *Simple) CleanUp() {
+	ticker := time.NewTicker(CLEANUP_TIME_INVERVAL)
+	for range ticker.C {
+		log.Printf("%s: !!!!! clean up operation !!!!!", s.metaData.Meta.Key)
+		s.mu.Lock()
+		diff := s.requestTimes - s.lastRequestTimes
+		diffMem := math.Abs(float64(s.metaData.MemoryInMb * uint64(diff)))
+		diffProportion := math.Abs(float64(diff) / float64(s.lastRequestTimes))
+		log.Printf("%s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
+			s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
+		if diff >= 0 {
+			log.Printf("#####should be increase")
+			// request increasing
+			// create more slots
+		} else {
+			log.Printf("#####should be decline")
+			// request decreasing
+			// delete more slots
+			if diffProportion > DOWNWARD_THRESHOLD {
+				s.deleteBatchSlots()
+			}
+		}
+		s.lastRequestTimes = s.requestTimes
+		s.mu.Unlock()
+	}
+
+}
+
+func (s *Simple) deleteBatchSlots() {
+	log.Printf("%s: deleteBatchSlots", s.metaData.Meta.Key)
+	for {
+		s.mu.Lock()
+		if element := s.idleInstance.Back(); element != nil {
+			log.Printf("%s: deleteBatchSlots", s.metaData.Meta.Key)
+			log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), int(DECLINE*float64(s.requestTimes)))
+			if len(s.instances) <= int(DECLINE*float64(s.requestTimes)) {
+				break
+			}
+			instance := element.Value.(*model2.Instance)
+			s.idleInstance.Remove(element)
+			delete(s.instances, instance.Id)
+			s.mu.Unlock()
+			go func() {
+				reason := fmt.Sprintf("delete the slots according to the clean up strategy")
+				ctx := context.Background()
+				ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+				s.deleteSlot(ctx, uuid.NewString(), instance.Slot.Id, instance.Id, instance.Meta.Key, reason)
+			}()
+
+			continue
+		}
+		s.mu.Unlock()
+		break
 	}
 }
 
