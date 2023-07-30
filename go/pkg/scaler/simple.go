@@ -32,18 +32,18 @@ import (
 )
 
 const (
-	// CLEANUP_TIME_INVERVAL the time interval to execute a clean up operation
-	CLEANUP_TIME_INVERVAL = 150 * time.Second
+	// CLEANUP_TIME_INVERVAL the time interval to execute a clean-up operation
+	CLEANUP_TIME_INVERVAL = 90 * time.Second
 
 	// UPWARD_THRESHOLD the threshold when the request is increasing
 	UPWARD_THRESHOLD = 0.2
-	// DOWNWARD_THRESHOLD the threshold when the request is declining
-	DOWNWARD_THRESHOLD = 0.2
+	// DOWNWARD_THRESHOLD the threshold when the request is declining, unit is MB*s
+	DOWNWARD_THRESHOLD = 4096
 
 	// EXPAND the expand coefficient
 	EXPAND = 1.2
 	// DECLINE the decline coefficient
-	DECLINE = 2048
+	DECLINE = 0.6
 )
 
 type Simple struct {
@@ -90,7 +90,11 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 	scheduler.wg.Add(1)
 	go func() {
 		defer scheduler.wg.Done()
-		scheduler.CleanUp()
+		// only dataset 3 use this strategy
+		if len(metaData.Key) == 40 {
+			scheduler.CleanUp()
+		}
+
 		scheduler.gcLoop()
 		log.Printf("gc loop for app: %s is stoped", metaData.Key)
 	}()
@@ -102,9 +106,9 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	start := time.Now()
 	instanceId := uuid.New().String()
 	defer func() {
-		log.Printf("Assign, request id: %s, instance id: %s, cost %dms", request.RequestId, instanceId, time.Since(start).Milliseconds())
+		//log.Printf("Assign, request id: %s, instance id: %s, cost %dms", request.RequestId, instanceId, time.Since(start).Milliseconds())
 	}()
-	log.Printf("Assign, request id: %s", request.RequestId)
+	//log.Printf("Assign, request id: %s", request.RequestId)
 	s.mu.Lock()
 	s.requestTimes++
 	assignDuration := float32(time.Since(s.lastAssignTime).Milliseconds())
@@ -114,7 +118,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	if element := s.idleInstance.Front(); element != nil {
 		// average time of the duration between last scheduling and this scheduling
 		s.assignDuration = s.assignDuration*0.2 + assignDuration*0.8
-		log.Printf("slot id: %s, assign duration: %f", s.metaData.Key, s.assignDuration)
+		//log.Printf("slot id: %s, assign duration: %f", s.metaData.Key, s.assignDuration)
 
 		instance := element.Value.(*model2.Instance)
 		instance.Busy = true
@@ -123,7 +127,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		startTime := time.Now()
 		s.startTime[instanceId] = &startTime
 		s.mu.Unlock()
-		log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
+		//log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
 		instanceId = instance.Id
 		return &pb.AssignReply{
 			Status: pb.Status_Ok,
@@ -170,12 +174,12 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	s.instances[instance.Id] = instance
 
 	s.assignDuration = s.assignDuration*0.2 + assignDuration*0.8
-	log.Printf("slot id: %s, assign duration: %f, ---no use old instance", s.metaData.Key, s.assignDuration)
+	//log.Printf("slot id: %s, assign duration: %f, ---no use old instance", s.metaData.Key, s.assignDuration)
 	startTime := time.Now()
 	s.startTime[instanceId] = &startTime
 
 	s.mu.Unlock()
-	log.Printf("request id: %s, instance %s for app %s is created, init latency: %dms", request.RequestId, instance.Id, instance.Meta.Key, instance.InitDurationInMs)
+	//log.Printf("request id: %s, instance %s for app %s is created, init latency: %dms", request.RequestId, instance.Id, instance.Meta.Key, instance.InitDurationInMs)
 
 	return &pb.AssignReply{
 		Status: pb.Status_Ok,
@@ -196,10 +200,10 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 		Status:       pb.Status_Ok,
 		ErrorMessage: nil,
 	}
-	start := time.Now()
+	//start := time.Now()
 	instanceId := request.Assigment.InstanceId
 	defer func() {
-		log.Printf("Idle, request id: %s, instance: %s, cost %dus", request.Assigment.RequestId, instanceId, time.Since(start).Microseconds())
+		//log.Printf("Idle, request id: %s, instance: %s, cost %dus", request.Assigment.RequestId, instanceId, time.Since(start).Microseconds())
 	}()
 	//log.Printf("Idle, request id: %s", request.Assigment.RequestId)
 	needDestroy := false
@@ -212,13 +216,13 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 			s.deleteSlot(ctx, request.Assigment.RequestId, slotId, instanceId, request.Assigment.MetaKey, "bad instance")
 		}
 	}()
-	log.Printf("Idle, request id: %s", request.Assigment.RequestId)
+	//log.Printf("Idle, request id: %s", request.Assigment.RequestId)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	exeTime := time.Since(*s.startTime[instanceId]).Milliseconds()
 	s.executionDuration = s.executionDuration*0.2 + float32(exeTime)*0.8
-	log.Printf("**slot id: %s, exec suration: %f", s.metaData.Key, s.executionDuration)
+	//log.Printf("**slot id: %s, exec suration: %f", s.metaData.Key, s.executionDuration)
 
 	if instance := s.instances[instanceId]; instance != nil {
 		slotId = instance.Slot.Id
@@ -294,41 +298,56 @@ func (s *Simple) gcLoop() {
 func (s *Simple) CleanUp() {
 	ticker := time.NewTicker(CLEANUP_TIME_INVERVAL)
 	for range ticker.C {
-		log.Printf("%s: !!!!! clean up operation !!!!!", s.metaData.Meta.Key)
+		//log.Printf("%s: !!!!! clean up operation !!!!!", s.metaData.Meta.Key)
 		s.mu.Lock()
 		diff := s.requestTimes - s.lastRequestTimes
-		diffMem := math.Abs(float64(s.metaData.MemoryInMb * uint64(diff)))
-		diffProportion := math.Abs(float64(diff) / float64(s.lastRequestTimes))
-		log.Printf("%s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
-			s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
-		if diff >= 0 {
-			log.Printf("#####should be increase")
+		diffMem := math.Abs(float64(diff)) * float64(s.metaData.MemoryInMb)
+		//diffProportion := math.Abs(float64(diff) / float64(s.lastRequestTimes))
+		//log.Printf("%s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
+		//s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
+		if diff > 0 {
+			//log.Printf("#####should be increase")
 			// request increasing
 			// create more slots
-		} else {
-			log.Printf("#####should be decline")
+		} else if diff < 0 {
+			//log.Printf("#####should be decline")
+			log.Printf("%s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
+				s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
 			// request decreasing
 			// delete more slots
-			if diffProportion > DOWNWARD_THRESHOLD {
-				s.deleteBatchSlots()
+			if diffMem > DOWNWARD_THRESHOLD {
+				expect := int(DECLINE * float64(s.requestTimes))
+				go s.deleteBatchSlots(expect)
 			}
 		}
 		s.lastRequestTimes = s.requestTimes
+		s.requestTimes = 0
 		s.mu.Unlock()
 	}
 
 }
 
-func (s *Simple) deleteBatchSlots() {
+func (s *Simple) assignExpectSlotValue() {
+
+}
+
+func (s *Simple) deleteBatchSlots(expect int) {
 	log.Printf("%s: deleteBatchSlots", s.metaData.Meta.Key)
+	startTime := time.Now()
 	for {
-		s.mu.Lock()
+		if time.Since(startTime) > 40*time.Second {
+			log.Printf("time out, can not wait for delete more slots")
+			break
+		}
+		//log.Printf("aaa")
+		//log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), int(DECLINE*float64(s.requestTimes)))
+		if len(s.instances) <= expect {
+			log.Printf("***break")
+			break
+		}
 		if element := s.idleInstance.Back(); element != nil {
-			log.Printf("%s: deleteBatchSlots", s.metaData.Meta.Key)
-			log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), int(DECLINE*float64(s.requestTimes)))
-			if len(s.instances) <= int(DECLINE*float64(s.requestTimes)) {
-				break
-			}
+			log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), expect)
+			s.mu.Lock()
 			instance := element.Value.(*model2.Instance)
 			s.idleInstance.Remove(element)
 			delete(s.instances, instance.Id)
@@ -340,11 +359,9 @@ func (s *Simple) deleteBatchSlots() {
 				defer cancel()
 				s.deleteSlot(ctx, uuid.NewString(), instance.Slot.Id, instance.Id, instance.Meta.Key, reason)
 			}()
-
+			log.Printf("** delete success **")
 			continue
 		}
-		s.mu.Unlock()
-		break
 	}
 }
 
