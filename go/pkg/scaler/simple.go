@@ -33,15 +33,15 @@ import (
 
 const (
 	// CLEANUP_TIME_INVERVAL the time interval to execute a clean-up operation
-	CLEANUP_TIME_INVERVAL = 90 * time.Second
+	CLEANUP_TIME_INVERVAL = 80 * time.Second
 
 	// UPWARD_THRESHOLD the threshold when the request is increasing
 	UPWARD_THRESHOLD = 0.2
 	// DOWNWARD_THRESHOLD the threshold when the request is declining, unit is MB*s
-	DOWNWARD_THRESHOLD = 4096
+	DOWNWARD_THRESHOLD = 1024
 
 	// EXPAND the expand coefficient
-	EXPAND = 1.2
+	EXPAND = 1.3
 	// DECLINE the decline coefficient
 	DECLINE = 0.6
 )
@@ -127,7 +127,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		startTime := time.Now()
 		s.startTime[instanceId] = &startTime
 		s.mu.Unlock()
-		//log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
+		log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
 		instanceId = instance.Id
 		return &pb.AssignReply{
 			Status: pb.Status_Ok,
@@ -179,7 +179,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	s.startTime[instanceId] = &startTime
 
 	s.mu.Unlock()
-	//log.Printf("request id: %s, instance %s for app %s is created, init latency: %dms", request.RequestId, instance.Id, instance.Meta.Key, instance.InitDurationInMs)
+	log.Printf("request id: %s, instance %s for app %s is created, init latency: %dms", request.RequestId, instance.Id, instance.Meta.Key, instance.InitDurationInMs)
 
 	return &pb.AssignReply{
 		Status: pb.Status_Ok,
@@ -200,10 +200,10 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 		Status:       pb.Status_Ok,
 		ErrorMessage: nil,
 	}
-	//start := time.Now()
+	start := time.Now()
 	instanceId := request.Assigment.InstanceId
 	defer func() {
-		//log.Printf("Idle, request id: %s, instance: %s, cost %dus", request.Assigment.RequestId, instanceId, time.Since(start).Microseconds())
+		log.Printf("Idle, request id: %s, instance: %s, cost %dus", request.Assigment.RequestId, instanceId, time.Since(start).Microseconds())
 	}()
 	//log.Printf("Idle, request id: %s", request.Assigment.RequestId)
 	needDestroy := false
@@ -301,22 +301,36 @@ func (s *Simple) CleanUp() {
 		//log.Printf("%s: !!!!! clean up operation !!!!!", s.metaData.Meta.Key)
 		s.mu.Lock()
 		diff := s.requestTimes - s.lastRequestTimes
-		diffMem := math.Abs(float64(diff)) * float64(s.metaData.MemoryInMb)
-		//diffProportion := math.Abs(float64(diff) / float64(s.lastRequestTimes))
+		diffMem := math.Abs(float64(len(s.instances))) * float64(s.metaData.MemoryInMb) * DECLINE
+		diffProportion := math.Abs(float64(diff) / float64(s.lastRequestTimes))
 		//log.Printf("%s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
 		//s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
+		if s.requestTimes == 0 && s.lastRequestTimes == 0 {
+			go s.deleteBatchSlots(0)
+			continue
+		}
+
 		if diff > 0 {
 			//log.Printf("#####should be increase")
 			// request increasing
 			// create more slots
+			log.Printf("expand: %s: request time: %d, last req time: %d, diff: %d, diffProp: %f",
+				s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffProportion)
+
+			//if diffProportion > UPWARD_THRESHOLD {
+			//	//expect := int(EXPAND * float64(s.requestTimes))
+			//	expect := int(EXPAND * float64(len(s.instances)))
+			//	go s.createBatchSlots(expect)
+			//}
 		} else if diff < 0 {
 			//log.Printf("#####should be decline")
-			log.Printf("%s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
+			log.Printf("decline: %s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
 				s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
 			// request decreasing
 			// delete more slots
-			if diffMem > DOWNWARD_THRESHOLD {
-				expect := int(DECLINE * float64(s.requestTimes))
+			if diffMem > DOWNWARD_THRESHOLD || diffProportion > 0.2 {
+				//expect := int(DECLINE * float64(s.requestTimes))
+				expect := int(DECLINE * float64(len(s.instances)))
 				go s.deleteBatchSlots(expect)
 			}
 		}
@@ -327,22 +341,69 @@ func (s *Simple) CleanUp() {
 
 }
 
-func (s *Simple) assignExpectSlotValue() {
+func (s *Simple) createBatchSlots(expect int) {
+	log.Printf("%s: createBatchSlots", s.metaData.Meta.Key)
+	startTime := time.Now()
+	for {
+		if time.Since(startTime) > 40*time.Second {
+			log.Printf("time out, can not wait for create more slots")
+			break
+		}
+		if len(s.instances) >= expect {
+			log.Printf("**finish create slots")
+			break
+		}
+		log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), expect)
+		resourceConfig := model2.SlotResourceConfig{
+			ResourceConfig: pb.ResourceConfig{MemoryInMegabytes: s.metaData.MemoryInMb},
+		}
 
+		ctx := context.Background()
+
+		slot, err := s.platformClient.CreateSlot(ctx, uuid.NewString(), &resourceConfig)
+
+		if err != nil {
+			errorMessage := fmt.Sprintf("create slot failed with: %s", err.Error())
+			log.Printf(errorMessage)
+		}
+
+		meta := &model2.Meta{
+			Meta: pb.Meta{
+				Key:           s.metaData.Meta.Key,
+				Runtime:       s.metaData.Meta.Runtime,
+				TimeoutInSecs: s.metaData.Meta.TimeoutInSecs,
+			},
+		}
+		instance, err := s.platformClient.Init(ctx, uuid.NewString(), uuid.New().String(), slot, meta)
+
+		if err != nil {
+			errorMessage := fmt.Sprintf("create slot failed with: %s", err.Error())
+			log.Printf(errorMessage)
+		}
+		s.mu.Lock()
+		instance.Busy = false
+		instanceStartTime := time.Now()
+		s.startTime[instance.Id] = &instanceStartTime
+		s.instances[instance.Id] = instance
+		s.idleInstance.PushBack(instance)
+		s.mu.Unlock()
+		log.Printf("** create success **")
+		continue
+	}
 }
 
 func (s *Simple) deleteBatchSlots(expect int) {
 	log.Printf("%s: deleteBatchSlots", s.metaData.Meta.Key)
 	startTime := time.Now()
 	for {
-		if time.Since(startTime) > 40*time.Second {
+		if time.Since(startTime) > 3*time.Second {
 			log.Printf("time out, can not wait for delete more slots")
 			break
 		}
 		//log.Printf("aaa")
 		//log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), int(DECLINE*float64(s.requestTimes)))
 		if len(s.instances) <= expect {
-			log.Printf("***break")
+			log.Printf("**finish delete slots")
 			break
 		}
 		if element := s.idleInstance.Back(); element != nil {
