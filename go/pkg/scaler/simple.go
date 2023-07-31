@@ -303,12 +303,9 @@ func (s *Simple) CleanUp() {
 		diff := s.requestTimes - s.lastRequestTimes
 		diffMem := math.Abs(float64(len(s.instances))) * float64(s.metaData.MemoryInMb) * DECLINE
 		diffProportion := math.Abs(float64(diff) / float64(s.lastRequestTimes))
+		expect := int(DECLINE * float64(len(s.instances)))
 		//log.Printf("%s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
 		//s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
-		if s.requestTimes == 0 && s.lastRequestTimes == 0 {
-			go s.deleteBatchSlots(0)
-			continue
-		}
 
 		if diff > 0 {
 			//log.Printf("#####should be increase")
@@ -330,7 +327,6 @@ func (s *Simple) CleanUp() {
 			// delete more slots
 			if diffMem > DOWNWARD_THRESHOLD || diffProportion > 0.2 {
 				//expect := int(DECLINE * float64(s.requestTimes))
-				expect := int(DECLINE * float64(len(s.instances)))
 				go s.deleteBatchSlots(expect)
 			}
 		}
@@ -394,12 +390,8 @@ func (s *Simple) createBatchSlots(expect int) {
 
 func (s *Simple) deleteBatchSlots(expect int) {
 	log.Printf("%s: deleteBatchSlots", s.metaData.Meta.Key)
-	startTime := time.Now()
 	for {
-		if time.Since(startTime) > 3*time.Second {
-			log.Printf("time out, can not wait for delete more slots")
-			break
-		}
+		//s.mu.Lock()
 		//log.Printf("aaa")
 		//log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), int(DECLINE*float64(s.requestTimes)))
 		if len(s.instances) <= expect {
@@ -408,11 +400,10 @@ func (s *Simple) deleteBatchSlots(expect int) {
 		}
 		if element := s.idleInstance.Back(); element != nil {
 			log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), expect)
-			s.mu.Lock()
 			instance := element.Value.(*model2.Instance)
 			s.idleInstance.Remove(element)
 			delete(s.instances, instance.Id)
-			s.mu.Unlock()
+			//s.mu.Unlock()
 			go func() {
 				reason := fmt.Sprintf("delete the slots according to the clean up strategy")
 				ctx := context.Background()
@@ -422,7 +413,12 @@ func (s *Simple) deleteBatchSlots(expect int) {
 			}()
 			log.Printf("** delete success **")
 			continue
+		} else {
+			log.Printf("do not have more idel instances")
+			break
 		}
+		//s.mu.Unlock()
+
 	}
 }
 
