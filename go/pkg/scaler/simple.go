@@ -200,7 +200,7 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 		slotId = instance.Slot.Id
 		instance.LastIdleTime = time.Now()
 		// add the timeout destroy the instance strategy
-		if s.executionDuration >= 1200 && instance.InitDurationInMs <= 200 && s.assignDuration > 1000*60 {
+		if s.executionDuration >= 1200000 && instance.InitDurationInMs <= 200000 && s.assignDuration > 1000000*60 {
 			needDestroy = true
 			delete(s.instances, instanceId)
 			log.Printf("request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
