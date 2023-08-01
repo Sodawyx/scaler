@@ -343,7 +343,7 @@ func (s *Simple) CleanUp() {
 			}
 
 		}
-		s.lastRequestTimes = s.requestTimes
+		s.lastRequestTimes = (s.lastRequestTimes + s.requestTimes) / 2
 		s.requestTimes = 0
 		s.mu.Unlock()
 	}
