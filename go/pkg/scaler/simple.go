@@ -100,8 +100,13 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 		//scheduler.CleanUp()
 	}()
 	go func() {
-		scheduler.gcLoop()
-		log.Printf("gc loop for app: %s is stoped", metaData.Key)
+		if len(metaData.Key) == 40 {
+			scheduler.gcLoop()
+			log.Printf("gc loop for app: %s is stoped", metaData.Key)
+		} else {
+			scheduler.gcLoop2()
+			log.Printf("gc loop for app: %s is stoped", metaData.Key)
+		}
 	}()
 
 	return scheduler
@@ -310,6 +315,38 @@ func (s *Simple) deleteSlot(ctx context.Context, requestId, slotId, instanceId, 
 }
 
 func (s *Simple) gcLoop() {
+	log.Printf("gc loop for app: %s is started", s.metaData.Key)
+	ticker := time.NewTicker(s.config.GcInterval)
+	for range ticker.C {
+		log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
+		for {
+			s.mu.Lock()
+			if element := s.idleInstance.Back(); element != nil {
+				instance := element.Value.(*model2.Instance)
+				idleDuration := time.Now().Sub(instance.LastIdleTime)
+				if idleDuration > s.config.IdleDurationBeforeGC || s.idleInstance.Len() > 10 {
+					//need GC
+					s.idleInstance.Remove(element)
+					delete(s.instances, instance.Id)
+					s.mu.Unlock()
+					go func() {
+						reason := fmt.Sprintf("Idle duration: %fs, excceed configured duration: %fs", idleDuration.Seconds(), s.config.IdleDurationBeforeGC.Seconds())
+						ctx := context.Background()
+						ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+						defer cancel()
+						s.deleteSlot(ctx, uuid.NewString(), instance.Slot.Id, instance.Id, instance.Meta.Key, reason)
+					}()
+
+					continue
+				}
+			}
+			s.mu.Unlock()
+			break
+		}
+	}
+}
+
+func (s *Simple) gcLoop2() {
 	log.Printf("gc loop for app: %s is started", s.metaData.Key)
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
