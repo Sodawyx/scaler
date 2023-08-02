@@ -17,15 +17,16 @@ import (
 	"container/list"
 	"context"
 	"fmt"
+	"log"
+	"math"
+	"sync"
+	"time"
+
 	"github.com/AliyunContainerService/scaler/go/pkg/config"
 	model2 "github.com/AliyunContainerService/scaler/go/pkg/model"
 	platform_client2 "github.com/AliyunContainerService/scaler/go/pkg/platform_client"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"log"
-	"math"
-	"sync"
-	"time"
 
 	pb "github.com/AliyunContainerService/scaler/proto"
 	"github.com/google/uuid"
@@ -117,8 +118,47 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	s.requestTimes++
 	assignDuration := float32(time.Since(s.lastAssignTime).Milliseconds())
 	s.lastAssignTime = start
+	s.mu.Unlock()
+
+	findVacantFlag := 0
+	for i := 0; i < 5; i++ {
+		// 数据集3不需要尝试等待，因为时间太短
+		if len(s.metaData.Key) == 40 {
+			break
+		}
+		s.mu.Lock()
+		// if find the free instance, scheduling this instance for test
+		if element := s.idleInstance.Front(); element != nil {
+			findVacantFlag = 1
+			// average time of the duration between last scheduling and this scheduling
+			s.assignDuration = s.assignDuration*0.2 + assignDuration*0.8
+			//log.Printf("slot id: %s, assign duration: %f", s.metaData.Key, s.assignDuration)
+
+			instance := element.Value.(*model2.Instance)
+			instance.Busy = true
+			s.idleInstance.Remove(element)
+			// record the instance assigned time
+			startTime := time.Now()
+			s.startTime[instanceId] = &startTime
+			s.mu.Unlock()
+			log.Printf("Assign, request id: %s, instance %s reused, findVacantFlag %d", request.RequestId, instance.Id, findVacantFlag)
+			instanceId = instance.Id
+			return &pb.AssignReply{
+				Status: pb.Status_Ok,
+				Assigment: &pb.Assignment{
+					RequestId:  request.RequestId,
+					MetaKey:    instance.Meta.Key,
+					InstanceId: instance.Id,
+				},
+				ErrorMessage: nil,
+			}, nil
+		}
+		s.mu.Unlock()
+		time.Sleep(time.Duration(500) * time.Millisecond)
+	}
 
 	// if find the free instance, scheduling this instance for test
+	s.mu.Lock()
 	if element := s.idleInstance.Front(); element != nil {
 		// average time of the duration between last scheduling and this scheduling
 		s.assignDuration = s.assignDuration*0.2 + assignDuration*0.8
