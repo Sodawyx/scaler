@@ -91,7 +91,8 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 	go func() {
 		defer scheduler.wg.Done()
 		// only dataset 3 use this strategy
-		if len(metaData.Key) == 40 {
+		if len(metaData.Key) != 40 {
+
 			scheduler.CleanUp()
 		}
 
