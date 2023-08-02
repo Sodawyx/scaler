@@ -18,6 +18,7 @@ import (
 	"github.com/AliyunContainerService/scaler/go/pkg/config"
 	"github.com/AliyunContainerService/scaler/go/pkg/model"
 	scaler2 "github.com/AliyunContainerService/scaler/go/pkg/scaler"
+	pb "github.com/AliyunContainerService/scaler/proto"
 	"log"
 	"sync"
 )
@@ -28,12 +29,59 @@ type Manager struct {
 	config     *config.Config
 }
 
+type PreAssignObject struct {
+	meta   *model.Meta
+	preNum int
+}
+
+var nodes1 = PreAssignObject{
+	meta: &model.Meta{
+		Meta: pb.Meta{
+			Key:           "nodes1",
+			Runtime:       "go",
+			TimeoutInSecs: 627,
+			MemoryInMb:    512,
+		},
+	},
+	preNum: 2,
+}
+
+var nodes2 = PreAssignObject{
+	meta: &model.Meta{
+		Meta: pb.Meta{
+			Key:           "nodes2",
+			Runtime:       "go",
+			TimeoutInSecs: 627,
+			MemoryInMb:    512,
+		},
+	},
+	preNum: 2,
+}
+
+func (m *Manager) PreAssign() {
+	var preList []PreAssignObject
+	preList = append(preList, nodes1)
+	preList = append(preList, nodes2)
+
+	m.rw.Lock()
+	for i := range preList {
+		log.Printf("%s", preList[i].meta)
+		scheduler := scaler2.New(preList[i].meta, m.config)
+		go scheduler.PreAssign(preList[i].preNum)
+		m.schedulers[preList[i].meta.Key] = scheduler
+	}
+	m.rw.Unlock()
+}
+
 func New(config *config.Config) *Manager {
-	return &Manager{
+	manager := &Manager{
 		rw:         sync.RWMutex{},
 		schedulers: make(map[string]scaler2.Scaler),
 		config:     config,
 	}
+	//manager.PreAssign()
+
+	return manager
 }
 
 func (m *Manager) GetOrCreate(metaData *model.Meta) scaler2.Scaler {

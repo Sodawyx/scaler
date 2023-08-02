@@ -33,7 +33,7 @@ import (
 
 const (
 	// CLEANUP_TIME_INVERVAL the time interval to execute a clean-up operation
-	CLEANUP_TIME_INVERVAL = 5 * time.Second
+	CLEANUP_TIME_INVERVAL = 60 * time.Second
 
 	// UPWARD_THRESHOLD the threshold when the request is increasing
 	UPWARD_THRESHOLD = 0.2
@@ -41,7 +41,7 @@ const (
 	DOWNWARD_THRESHOLD = 512
 
 	// EXPAND the expand coefficient
-	EXPAND = 1.3
+	EXPAND = 2.0
 	// DECLINE the decline coefficient
 	DECLINE = 0.2
 )
@@ -95,6 +95,9 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 			scheduler.CleanUp()
 		}
 
+		//scheduler.CleanUp()
+	}()
+	go func() {
 		scheduler.gcLoop()
 		log.Printf("gc loop for app: %s is stoped", metaData.Key)
 	}()
@@ -228,11 +231,13 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 		slotId = instance.Slot.Id
 		instance.LastIdleTime = time.Now()
 		// add the timeout destroy the instance strategy //
-		if s.executionDuration >= 120000 && instance.InitDurationInMs <= 200000 && s.assignDuration > 1000000*60 {
-			needDestroy = true
-			delete(s.instances, instanceId)
-			//log.Printf("request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
-			return reply, nil
+		if len(s.metaData.Key) == 40 {
+			if s.executionDuration >= 120000 && instance.InitDurationInMs <= 200000 && s.assignDuration > 1000000*60 {
+				needDestroy = true
+				delete(s.instances, instanceId)
+				//log.Printf("request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
+				return reply, nil
+			}
 		}
 
 		if needDestroy {
@@ -267,6 +272,7 @@ func (s *Simple) gcLoop() {
 	log.Printf("gc loop for app: %s is started", s.metaData.Key)
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
+		log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
 		for {
 			s.mu.Lock()
 			if element := s.idleInstance.Back(); element != nil {
@@ -297,21 +303,38 @@ func (s *Simple) gcLoop() {
 // CleanUp clean up the idle instances according to TCP strategy
 func (s *Simple) CleanUp() {
 	ticker := time.NewTicker(CLEANUP_TIME_INVERVAL)
+	log.Printf("enter")
 	for range ticker.C {
+
+		log.Printf("%s: instance num : %d", s.metaData.Meta.Key, len(s.instances))
+
 		//log.Printf("%s: !!!!! clean up operation !!!!!", s.metaData.Meta.Key)
 		s.mu.Lock()
 		diff := s.requestTimes - s.lastRequestTimes
-		diffMem := math.Abs(float64(s.idleInstance.Len())) * float64(s.metaData.MemoryInMb)
+		//diffMem := math.Abs(float64(s.idleInstance.Len())) * float64(s.metaData.MemoryInMb)
 		diffProportion := math.Abs(float64(diff) / float64(s.lastRequestTimes))
-		cutProportion := math.Abs(float64(s.requestTimes) / float64(s.lastRequestTimes))
-		if s.lastRequestTimes == 0 {
-			cutProportion = 0.0
-		}
-		maxCut := math.Min(cutProportion, DECLINE)
+		//cutProportion := math.Abs(float64(s.requestTimes) / float64(s.lastRequestTimes))
+		freeProp := math.Abs(float64(s.idleInstance.Len()) / float64(len(s.instances)))
+		log.Printf("freePop: %f", freeProp)
+		//if s.lastRequestTimes == 0 {
+		//	cutProportion = 0.0
+		//}
+		//maxCut := math.Min(cutProportion, DECLINE)
 
-		expect := int(math.Floor(maxCut * float64(s.idleInstance.Len())))
+		maxAdd := EXPAND
+		if len(s.instances) > 50 {
+			maxAdd = 1.2
+		}
+		if len(s.instances) > 100 || (s.idleInstance.Len() > 2 && freeProp > 0.2) {
+			maxAdd = 1
+		}
+
+		//expect := int(math.Floor(maxCut * float64(s.idleInstance.Len())))
 		//log.Printf("%s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
 		//s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
+
+		expect := int(maxAdd * float64(len(s.instances)))
+		s.mu.Unlock()
 
 		if diff > 0 {
 			//log.Printf("#####should be increase")
@@ -320,16 +343,16 @@ func (s *Simple) CleanUp() {
 			//log.Printf("expand: %s: request time: %d, last req time: %d, diff: %d, diffProp: %f",
 			//	s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffProportion)
 
-			//if diffProportion > UPWARD_THRESHOLD {
-			//	//expect := int(EXPAND * float64(s.requestTimes))
-			//	expect := int(EXPAND * float64(len(s.instances)))
-			//	go s.createBatchSlots(expect)
-			//}
+			if diffProportion > UPWARD_THRESHOLD {
+				//expect := int(EXPAND * float64(s.requestTimes))
+
+				go s.createBatchSlots(expect)
+			}
 		} else if diff <= 0 {
 			//log.Printf("#####should be decline")
-			log.Printf("decline: %s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
-				s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
-			log.Printf("maxCut is: %f", maxCut)
+			//log.Printf("decline: %s: request time: %d, last req time: %d, diff: %d, diffMem: %f",
+			//	s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffMem)
+			//log.Printf("maxCut is: %f", maxCut)
 
 			// request decreasing
 			// delete more slots
@@ -337,67 +360,75 @@ func (s *Simple) CleanUp() {
 			//	expect = len(s.instances)
 			//	go s.deleteBatchSlots(expect)
 			//} else
-			if diffMem > DOWNWARD_THRESHOLD || diffProportion > 0.2 {
-				//expect := int(DECLINE * float64(s.requestTimes))
-				go s.deleteBatchSlots(expect)
-			}
+			//if diffMem > DOWNWARD_THRESHOLD || diffProportion > 0.2 {
+			//	//expect := int(DECLINE * float64(s.requestTimes))
+			//	go s.deleteBatchSlots(expect)
+			//}
 
 		}
-		s.lastRequestTimes = (s.lastRequestTimes + s.requestTimes) / 2
+		s.lastRequestTimes = s.requestTimes
 		s.requestTimes = 0
-		s.mu.Unlock()
 	}
 
 }
 
 func (s *Simple) createBatchSlots(expect int) {
-	log.Printf("%s: createBatchSlots", s.metaData.Meta.Key)
-	startTime := time.Now()
-	for {
-		if time.Since(startTime) > 40*time.Second {
-			log.Printf("time out, can not wait for create more slots")
-			break
-		}
-		if len(s.instances) >= expect {
-			log.Printf("**finish create slots")
-			break
-		}
-		log.Printf("%s: instance num: %d, expected num: %d", s.metaData.Meta.Key, len(s.instances), expect)
-		resourceConfig := model2.SlotResourceConfig{
-			ResourceConfig: pb.ResourceConfig{MemoryInMegabytes: s.metaData.MemoryInMb},
-		}
+	//s.mu.Lock()
+	log.Printf("%s: createBatchSlots, now instance length is %d, expect value is: %d", s.metaData.Meta.Key, len(s.instances), expect)
+	if len(s.instances) >= expect {
+		log.Printf("**finish create slots")
+		return
+	}
+	iter := expect - len(s.instances)
+	//s.mu.Unlock()
+	for i := 0; i < iter; i++ {
+		go s.asyncCreateSlots()
+	}
+}
 
-		ctx := context.Background()
+func (s *Simple) asyncCreateSlots() {
+	resourceConfig := model2.SlotResourceConfig{
+		ResourceConfig: pb.ResourceConfig{MemoryInMegabytes: s.metaData.MemoryInMb},
+	}
 
-		slot, err := s.platformClient.CreateSlot(ctx, uuid.NewString(), &resourceConfig)
+	ctx := context.Background()
 
-		if err != nil {
-			errorMessage := fmt.Sprintf("create slot failed with: %s", err.Error())
-			log.Printf(errorMessage)
-		}
+	slot, err := s.platformClient.CreateSlot(ctx, uuid.NewString(), &resourceConfig)
 
-		meta := &model2.Meta{
-			Meta: pb.Meta{
-				Key:           s.metaData.Meta.Key,
-				Runtime:       s.metaData.Meta.Runtime,
-				TimeoutInSecs: s.metaData.Meta.TimeoutInSecs,
-			},
-		}
-		instance, err := s.platformClient.Init(ctx, uuid.NewString(), uuid.New().String(), slot, meta)
+	if err != nil {
+		errorMessage := fmt.Sprintf("create slot failed with: %s", err.Error())
+		log.Printf(errorMessage)
+	}
 
-		if err != nil {
-			errorMessage := fmt.Sprintf("create slot failed with: %s", err.Error())
-			log.Printf(errorMessage)
-		}
-		s.mu.Lock()
-		instance.Busy = false
-		instanceStartTime := time.Now()
-		s.startTime[instance.Id] = &instanceStartTime
-		s.instances[instance.Id] = instance
-		s.idleInstance.PushBack(instance)
-		s.mu.Unlock()
-		log.Printf("** create success **")
-		continue
+	meta := &model2.Meta{
+		Meta: pb.Meta{
+			Key:           s.metaData.Meta.Key,
+			Runtime:       s.metaData.Meta.Runtime,
+			TimeoutInSecs: s.metaData.Meta.TimeoutInSecs,
+		},
+	}
+	instance, err := s.platformClient.Init(ctx, uuid.NewString(), uuid.New().String(), slot, meta)
+
+	if err != nil {
+		errorMessage := fmt.Sprintf("create slot failed with: %s", err.Error())
+		log.Printf(errorMessage)
+		return
+	}
+	s.mu.Lock()
+	instance.Busy = false
+	instanceStartTime := time.Now()
+	s.startTime[instance.Id] = &instanceStartTime
+	s.instances[instance.Id] = instance
+	s.idleInstance.PushBack(instance)
+	s.mu.Unlock()
+	log.Printf("** create success **")
+}
+
+func (s *Simple) PreAssign(expect int) {
+	time.Sleep(10 * time.Second)
+	log.Printf("pre-assign %s for %d instances", s.metaData.Key, expect)
+	for i := 0; i < expect; i++ {
+		go s.asyncCreateSlots()
 	}
 }
 
