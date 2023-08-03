@@ -147,6 +147,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			s.mu.Lock()
 			s.waitAssignCnt++
 			if s.waitAssignCnt / len(s.instances) > 3.0 {
+				s.mu.Unlock()
 				break
 			}
 			s.mu.Unlock()
