@@ -39,7 +39,7 @@ const (
 	// UPWARD_THRESHOLD the threshold when the request is increasing
 	UPWARD_THRESHOLD = 0.2
 	// DOWNWARD_THRESHOLD the threshold when the request is declining, unit is MB*s
-	DOWNWARD_THRESHOLD = 4096
+	DOWNWARD_THRESHOLD = 3000
 
 	// EXPAND the expand coefficient
 	EXPAND = 2.0
@@ -104,6 +104,9 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 	go func() {
 		if len(metaData.Key) == 40 {
 			scheduler.gcLoop()
+			log.Printf("gc loop for app: %s is stoped", metaData.Key)
+		} else {
+			scheduler.gcLoop2()
 			log.Printf("gc loop for app: %s is stoped", metaData.Key)
 		}
 	}()
@@ -361,7 +364,7 @@ func (s *Simple) gcLoop() {
 
 func (s *Simple) gcLoop2() {
 	//log.Printf("gc loop for app: %s is started", s.metaData.Key)
-	ticker := time.NewTicker(s.config.GcInterval)
+	ticker := time.NewTicker(30 * time.Minute)
 	for range ticker.C {
 		//log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
 		for {
@@ -369,7 +372,7 @@ func (s *Simple) gcLoop2() {
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model2.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration > s.config.IdleDurationBeforeGC || s.idleInstance.Len() > 10 {
+				if idleDuration > 15*time.Minute {
 					//need GC
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
