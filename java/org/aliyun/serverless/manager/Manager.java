@@ -40,7 +40,7 @@ public class Manager {
                 return scheduler;
             }
 
-            logger.info("Create new scaler for app " + function.getKey());
+            //logger.info("Create new scaler for app " + function.getKey());
             scheduler = new SimpleScaler(function, config);
             schedulers.put(function.getKey(), scheduler);
             return scheduler;

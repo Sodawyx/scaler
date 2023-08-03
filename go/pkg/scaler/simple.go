@@ -39,7 +39,7 @@ const (
 	// UPWARD_THRESHOLD the threshold when the request is increasing
 	UPWARD_THRESHOLD = 0.2
 	// DOWNWARD_THRESHOLD the threshold when the request is declining, unit is MB*s
-	DOWNWARD_THRESHOLD = 512
+	DOWNWARD_THRESHOLD = 4096
 
 	// EXPAND the expand coefficient
 	EXPAND = 2.0
@@ -64,6 +64,7 @@ type Simple struct {
 	lastRequestTimes int
 	// recording the request times
 	requestTimes   int
+	initTime       int
 	lastAssignTime time.Time
 }
 
@@ -86,8 +87,9 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 		lastAssignTime:    time.Now(),
 		lastRequestTimes:  -1,
 		requestTimes:      0,
+		initTime:          0,
 	}
-	log.Printf("New scaler for app: %s is created", metaData.Key)
+	//log.Printf("New scaler for app: %s is created", metaData.Key)
 	scheduler.wg.Add(1)
 	go func() {
 		defer scheduler.wg.Done()
@@ -102,9 +104,6 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 	go func() {
 		if len(metaData.Key) == 40 {
 			scheduler.gcLoop()
-			log.Printf("gc loop for app: %s is stoped", metaData.Key)
-		} else {
-			scheduler.gcLoop2()
 			log.Printf("gc loop for app: %s is stoped", metaData.Key)
 		}
 	}()
@@ -124,17 +123,29 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	assignDuration := float32(time.Since(s.lastAssignTime).Milliseconds())
 	s.lastAssignTime = start
 	s.mu.Unlock()
+	var iters int
+	var interval int
 
-	findVacantFlag := 0
-	for i := 0; i < 5; i++ {
-		// 数据集3不需要尝试等待，因为时间太短
-		if len(s.metaData.Key) == 40 {
+	//data 3
+	if len(s.metaData.Key) == 40 {
+		iters = 5
+		interval = 200
+	} else {
+		//data 1 2
+		iters = 5
+		interval = 500
+	}
+
+	//findVacantFlag := 0
+	for i := 0; i < iters; i++ {
+		// low cold start time will be break
+		if s.initTime < 2500 {
 			break
 		}
 		s.mu.Lock()
 		// if find the free instance, scheduling this instance for test
 		if element := s.idleInstance.Front(); element != nil {
-			findVacantFlag = 1
+			//findVacantFlag = 1
 			// average time of the duration between last scheduling and this scheduling
 			s.assignDuration = s.assignDuration*0.2 + assignDuration*0.8
 			//log.Printf("slot id: %s, assign duration: %f", s.metaData.Key, s.assignDuration)
@@ -146,7 +157,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			startTime := time.Now()
 			s.startTime[instanceId] = &startTime
 			s.mu.Unlock()
-			log.Printf("Assign, request id: %s, instance %s reused, findVacantFlag %d", request.RequestId, instance.Id, findVacantFlag)
+			//log.Printf("Assign, request id: %s, instance %s reused, findVacantFlag %d", request.RequestId, instance.Id, findVacantFlag)
 			instanceId = instance.Id
 			return &pb.AssignReply{
 				Status: pb.Status_Ok,
@@ -159,7 +170,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			}, nil
 		}
 		s.mu.Unlock()
-		time.Sleep(time.Duration(500) * time.Millisecond)
+		time.Sleep(time.Duration(interval) * time.Millisecond)
 	}
 
 	// if find the free instance, scheduling this instance for test
@@ -175,6 +186,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		// record the instance assigned time
 		startTime := time.Now()
 		s.startTime[instanceId] = &startTime
+
 		s.mu.Unlock()
 		//log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
 		instanceId = instance.Id
@@ -226,6 +238,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	//log.Printf("slot id: %s, assign duration: %f, ---no use old instance", s.metaData.Key, s.assignDuration)
 	startTime := time.Now()
 	s.startTime[instanceId] = &startTime
+	s.initTime = int(instance.InitDurationInMs)
 
 	s.mu.Unlock()
 	//log.Printf("request id: %s, instance %s for app %s is created, init latency: %dms", request.RequestId, instance.Id, instance.Meta.Key, instance.InitDurationInMs)
@@ -308,23 +321,23 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 }
 
 func (s *Simple) deleteSlot(ctx context.Context, requestId, slotId, instanceId, metaKey, reason string) {
-	log.Printf("start delete Instance %s (Slot: %s) of app: %s", instanceId, slotId, metaKey)
+	//log.Printf("start delete Instance %s (Slot: %s) of app: %s", instanceId, slotId, metaKey)
 	if err := s.platformClient.DestroySLot(ctx, requestId, slotId, reason); err != nil {
 		log.Printf("delete Instance %s (Slot: %s) of app: %s failed with: %s", instanceId, slotId, metaKey, err.Error())
 	}
 }
 
 func (s *Simple) gcLoop() {
-	log.Printf("gc loop for app: %s is started", s.metaData.Key)
+	//log.Printf("gc loop for app: %s is started", s.metaData.Key)
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
-		log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
+		//log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
 		for {
 			s.mu.Lock()
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model2.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration > s.config.IdleDurationBeforeGC || s.idleInstance.Len() > 10 {
+				if idleDuration > s.config.IdleDurationBeforeGC || s.idleInstance.Len() > 10 || uint64(s.idleInstance.Len())*s.metaData.MemoryInMb > DOWNWARD_THRESHOLD {
 					//need GC
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
@@ -347,10 +360,10 @@ func (s *Simple) gcLoop() {
 }
 
 func (s *Simple) gcLoop2() {
-	log.Printf("gc loop for app: %s is started", s.metaData.Key)
+	//log.Printf("gc loop for app: %s is started", s.metaData.Key)
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
-		log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
+		//log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
 		for {
 			s.mu.Lock()
 			if element := s.idleInstance.Back(); element != nil {
@@ -381,10 +394,10 @@ func (s *Simple) gcLoop2() {
 // CleanUp clean up the idle instances according to TCP strategy
 func (s *Simple) CleanUp() {
 	ticker := time.NewTicker(CLEANUP_TIME_INVERVAL)
-	log.Printf("enter")
+	//log.Printf("enter")
 	for range ticker.C {
 
-		log.Printf("%s: instance num : %d", s.metaData.Meta.Key, len(s.instances))
+		//log.Printf("%s: instance num : %d", s.metaData.Meta.Key, len(s.instances))
 
 		//log.Printf("%s: !!!!! clean up operation !!!!!", s.metaData.Meta.Key)
 		s.mu.Lock()
@@ -393,7 +406,7 @@ func (s *Simple) CleanUp() {
 		diffProportion := math.Abs(float64(diff) / float64(s.lastRequestTimes))
 		//cutProportion := math.Abs(float64(s.requestTimes) / float64(s.lastRequestTimes))
 		freeProp := math.Abs(float64(s.idleInstance.Len()) / float64(len(s.instances)))
-		log.Printf("freePop: %f", freeProp)
+		//log.Printf("freePop: %f", freeProp)
 		//if s.lastRequestTimes == 0 {
 		//	cutProportion = 0.0
 		//}
@@ -422,9 +435,9 @@ func (s *Simple) CleanUp() {
 			//	s.metaData.Meta.Key, s.requestTimes, s.lastRequestTimes, diff, diffProportion)
 
 			if diffProportion > UPWARD_THRESHOLD {
-				//expect := int(EXPAND * float64(s.requestTimes))
+				//expect = math.Max(float64(expect), 10)
 
-				go s.createBatchSlots(expect)
+				go s.createBatchSlots(int(math.Min(float64(expect), 10)))
 			}
 		} else if diff <= 0 {
 			//log.Printf("#####should be decline")
@@ -452,9 +465,9 @@ func (s *Simple) CleanUp() {
 
 func (s *Simple) createBatchSlots(expect int) {
 	//s.mu.Lock()
-	log.Printf("%s: createBatchSlots, now instance length is %d, expect value is: %d", s.metaData.Meta.Key, len(s.instances), expect)
+	//log.Printf("%s: createBatchSlots, now instance length is %d, expect value is: %d", s.metaData.Meta.Key, len(s.instances), expect)
 	if len(s.instances) >= expect {
-		log.Printf("**finish create slots")
+		//log.Printf("**finish create slots")
 		return
 	}
 	iter := expect - len(s.instances)
@@ -499,7 +512,7 @@ func (s *Simple) asyncCreateSlots() {
 	s.instances[instance.Id] = instance
 	s.idleInstance.PushBack(instance)
 	s.mu.Unlock()
-	log.Printf("** create success **")
+	//log.Printf("** create success **")
 }
 
 func (s *Simple) PreAssign(expect int) {
@@ -533,10 +546,10 @@ func (s *Simple) deleteBatchSlots(expect int) {
 				defer cancel()
 				s.deleteSlot(ctx, uuid.NewString(), instance.Slot.Id, instance.Id, instance.Meta.Key, reason)
 			}()
-			log.Printf("** delete success **")
+			//log.Printf("** delete success **")
 			continue
 		} else {
-			log.Printf("do not have more idel instances")
+			//log.Printf("do not have more idel instances")
 			break
 		}
 		//s.mu.Unlock()
