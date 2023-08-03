@@ -66,6 +66,8 @@ type Simple struct {
 	requestTimes   int
 	initTime       int
 	lastAssignTime time.Time
+	// How many assign requests are waiting
+	waitAssignCnt	int
 }
 
 func New(metaData *model2.Meta, config *config.Config) Scaler {
@@ -135,12 +137,22 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		interval = 200
 	} else {
 		//data 1 2
-		iters = 5
-		interval = 500
+		iters = 50
+		interval = 200
 	}
 
 	//findVacantFlag := 0
 	for i := 0; i < iters; i++ {
+		if i == 0 {
+			s.mu.Lock()
+			s.waitAssignCnt++
+			if s.waitAssignCnt / len(s.instances) > 3.0 {
+				break
+			}
+			s.mu.Unlock()
+		}
+		// Judge wait or not
+
 		// low cold start time will be break
 		if s.initTime < 2500 {
 			break
@@ -175,6 +187,9 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		s.mu.Unlock()
 		time.Sleep(time.Duration(interval) * time.Millisecond)
 	}
+	s.mu.Lock()
+	s.waitAssignCnt--
+	s.mu.Unlock()
 
 	// if find the free instance, scheduling this instance for test
 	s.mu.Lock()
