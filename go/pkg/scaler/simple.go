@@ -39,7 +39,7 @@ const (
 	// UPWARD_THRESHOLD the threshold when the request is increasing
 	UPWARD_THRESHOLD = 0.2
 	// DOWNWARD_THRESHOLD the threshold when the request is declining, unit is MB*s
-	DOWNWARD_THRESHOLD = 3000
+	DOWNWARD_THRESHOLD = 4096
 
 	// EXPAND the expand coefficient
 	EXPAND = 2.0
