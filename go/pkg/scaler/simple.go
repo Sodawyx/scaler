@@ -90,6 +90,7 @@ func New(metaData *model2.Meta, config *config.Config) Scaler {
 		lastRequestTimes:  -1,
 		requestTimes:      0,
 		initTime:          0,
+		waitAssignCnt:     0,
 	}
 	//log.Printf("New scaler for app: %s is created", metaData.Key)
 	scheduler.wg.Add(1)
@@ -133,8 +134,8 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 
 	//data 3
 	if len(s.metaData.Key) == 40 {
-		iters = 5
-		interval = 200
+		iters = 10
+		interval = 100
 	} else {
 		//data 1 2
 		iters = 25
@@ -146,7 +147,10 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		if i == 0 {
 			s.mu.Lock()
 			s.waitAssignCnt++
-			if len(s.instances) == 0 || s.waitAssignCnt/len(s.instances) > 3.0 {
+
+			prop := float64(s.waitAssignCnt) / float64(len(s.instances))
+			log.Printf("app: %s, wait: %d, prop: %f", s.metaData.Key, s.waitAssignCnt, prop)
+			if len(s.instances) == 0 || prop > 3.0 {
 				s.mu.Unlock()
 				break
 			}
@@ -175,6 +179,8 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			s.mu.Unlock()
 			//log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
 			instanceId = instance.Id
+			s.waitAssignCnt--
+			log.Printf("old use app: %s, wait: %d", s.metaData.Key, s.waitAssignCnt)
 			return &pb.AssignReply{
 				Status: pb.Status_Ok,
 				Assigment: &pb.Assignment{
@@ -190,6 +196,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	}
 	s.mu.Lock()
 	s.waitAssignCnt--
+	log.Printf("create new app: %s, wait: %d", s.metaData.Key, s.waitAssignCnt)
 	s.mu.Unlock()
 
 	// if find the free instance, scheduling this instance for test
@@ -384,7 +391,7 @@ func (s *Simple) gcLoop() {
 
 func (s *Simple) gcLoop2() {
 	//log.Printf("gc loop for app: %s is started", s.metaData.Key)
-	ticker := time.NewTicker(30 * time.Minute)
+	ticker := time.NewTicker(15 * time.Minute)
 	for range ticker.C {
 		//log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
 		for {
@@ -392,7 +399,7 @@ func (s *Simple) gcLoop2() {
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model2.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration > 15*time.Minute {
+				if idleDuration > 8*time.Minute {
 					//need GC
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
