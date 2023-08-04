@@ -138,8 +138,8 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		interval = 100
 	} else {
 		//data 1 2
-		iters = 25
-		interval = 200
+		iters = 20
+		interval = 500
 	}
 
 	//findVacantFlag := 0
