@@ -39,7 +39,7 @@ const (
 	// UPWARD_THRESHOLD the threshold when the request is increasing
 	UPWARD_THRESHOLD = 0.2
 	// DOWNWARD_THRESHOLD the threshold when the request is declining, unit is MB*s
-	DOWNWARD_THRESHOLD = 3000
+	DOWNWARD_THRESHOLD = 4096
 
 	// EXPAND the expand coefficient
 	EXPAND = 2.0
@@ -67,7 +67,7 @@ type Simple struct {
 	initTime       int
 	lastAssignTime time.Time
 	// How many assign requests are waiting
-	waitAssignCnt	int
+	waitAssignCnt int
 }
 
 func New(metaData *model2.Meta, config *config.Config) Scaler {
@@ -137,7 +137,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		interval = 200
 	} else {
 		//data 1 2
-		iters = 50
+		iters = 25
 		interval = 200
 	}
 
@@ -146,7 +146,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		if i == 0 {
 			s.mu.Lock()
 			s.waitAssignCnt++
-			if len(s.instances) == 0 || s.waitAssignCnt / len(s.instances) > 3.0 {
+			if len(s.instances) == 0 || s.waitAssignCnt/len(s.instances) > 3.0 {
 				s.mu.Unlock()
 				break
 			}
@@ -173,7 +173,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			startTime := time.Now()
 			s.startTime[instanceId] = &startTime
 			s.mu.Unlock()
-			//log.Printf("Assign, request id: %s, instance %s reused, findVacantFlag %d", request.RequestId, instance.Id, findVacantFlag)
+			//log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
 			instanceId = instance.Id
 			return &pb.AssignReply{
 				Status: pb.Status_Ok,
@@ -227,6 +227,10 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			MemoryInMegabytes: request.MetaData.MemoryInMb,
 		},
 	}
+
+	ctx = context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 100*time.Second)
+	defer cancel()
 	slot, err := s.platformClient.CreateSlot(ctx, request.RequestId, &resourceConfig)
 	if err != nil {
 		errorMessage := fmt.Sprintf("create slot failed with: %s", err.Error())
@@ -502,6 +506,8 @@ func (s *Simple) asyncCreateSlots() {
 	}
 
 	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 100*time.Second)
+	defer cancel()
 
 	slot, err := s.platformClient.CreateSlot(ctx, uuid.NewString(), &resourceConfig)
 
