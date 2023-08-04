@@ -364,7 +364,7 @@ func (s *Simple) gcLoop() {
 
 func (s *Simple) gcLoop2() {
 	//log.Printf("gc loop for app: %s is started", s.metaData.Key)
-	ticker := time.NewTicker(30 * time.Minute)
+	ticker := time.NewTicker(15 * time.Minute)
 	for range ticker.C {
 		//log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
 		for {
@@ -372,7 +372,7 @@ func (s *Simple) gcLoop2() {
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model2.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration > 15*time.Minute {
+				if idleDuration > 8*time.Minute {
 					//need GC
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
