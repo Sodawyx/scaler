@@ -75,10 +75,10 @@ type Simple struct {
 var premap = make(map[string]int)
 
 func PreLoad() {
-	premap["roles1"] = 100
-	premap["rolebindings1"] = 120
+	premap["roles1"] = 90
+	premap["rolebindings1"] = 110
 	premap["nodes1"] = 4
-	premap["certificatesigningrequests1"] = 50
+	premap["certificatesigningrequests1"] = 40
 
 	premap["roles2"] = 150
 	premap["rolebindings2"] = 130
@@ -419,9 +419,9 @@ func (s *Simple) gcLoop() {
 }
 
 func (s *Simple) gcLoop2() {
-	time.Sleep(20 * time.Minute)
+	//time.Sleep(20 * time.Minute)
 	//log.Printf("gc loop for app: %s is started", s.metaData.Key)
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(15 * time.Minute)
 	for range ticker.C {
 		//log.Printf("gc loop for app: %s is started， idle len is: %d", s.metaData.Key, s.idleInstance.Len())
 		for {
@@ -429,7 +429,7 @@ func (s *Simple) gcLoop2() {
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model2.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration > 5*time.Minute {
+				if idleDuration > 8*time.Minute {
 					//need GC
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
