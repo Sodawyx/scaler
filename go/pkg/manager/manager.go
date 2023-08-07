@@ -80,6 +80,7 @@ func New(config *config.Config) *Manager {
 		config:     config,
 	}
 	//manager.PreAssign()
+	scaler2.PreLoad()
 
 	return manager
 }

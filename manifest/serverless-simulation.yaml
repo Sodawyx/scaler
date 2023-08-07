@@ -20,7 +20,8 @@ spec:
         imagePullPolicy: Always
         command: ["./run.sh"]
       - name: serverless-simulator
-        image: registry-vpc.cn-beijing.aliyuncs.com/cloudnative-challenge/simulator:v3.1
+        image: registry-vpc.cn-beijing.aliyuncs.com/cloudnative-challenge/simulator:v3.2
+        imagePullPolicy: Always
         command: ["./run.sh" ]
         # 需要替换为选手希望测试的数据集名称，数据集的名称可以参考data/data_trainning.tar.gz解压后的目录结构
         # 不填写参数时，默认会测试所有的数据集
